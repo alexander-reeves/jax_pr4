@@ -1,0 +1,27 @@
+like_approx = gaussian
+
+map_names = 100 143 217 T E
+map_fields = T T T T E
+
+data_ranges =like_NPIPE_12.6_unified_data_ranges.txt
+
+#can filter by type or ell range set (data_ranges must match covmat/ch_hat_file content)
+#use_cl = 100x100 143x143 217x217 143x217
+#use_range = 30-1400 1500-2000
+
+cl_hat_file = like_NPIPE_12.6_unified_spectra.txt
+
+covmat_fiducial = like_NPIPE_12.6_unified_cov.bin
+covmat_cl = 100x100 143x143 217x217 143x217 TE EE
+
+nuisance_params = CamSpecHM.paramnames
+
+dust100file=100x100_10.5_dust.dat
+dust143file=143x143_10.5_dust.dat
+dust217file=217x217_10.5_dust.dat
+dust143x217file=143x217_10.5_dust.dat
+
+cib217file=cib217.txt
+sz143file = tsz_143_eps0.50.dat
+tszxcibfile = sz_x_cib_template.dat
+kszfile = cl_ksz_148_trac.dat
