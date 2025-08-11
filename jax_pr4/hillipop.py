@@ -8,7 +8,7 @@ from jax_pr4.module import *
 import os
 from itertools import combinations
 import astropy.io.fits as fits
-
+import numpy as np
 # Import from jax_pr4 modules
 from jax_pr4 import utils
 from jax_pr4 import foregrounds_hillipop as fg
@@ -196,7 +196,7 @@ class HillipopPR4:
             self._invkll = None  # Not needed, will use compressed version
         else:
             filename = os.path.join(self.data_folder, self.covariance_matrix_file)
-            self._invkll = self._read_invcovmatrix(filename)
+            self._invkll = self._read_invcovmatrix(filename).astype(np.float32)
 
         # # now lets set some ell max if desired
         # kill = []                   # indices to mask in data-vector & covmat
@@ -440,40 +440,74 @@ class HillipopPR4:
 
         return xl
 
+
     def _xspectra_to_xfreq(self, cl, weight, normed=True):
         """
-        Average cross-spectra per cross-frequency
+        Average cross-spectra per cross-frequency.
+
+        If weight == inf (masked multipole) we just drop that multipole
+        from both numerator and denominator instead of giving it weight 1.
         """
         xcl = array(zeros((self._nxfreq, cl.shape[1], 2500 + 1)))
         xw8 = array(zeros((self._nxfreq, cl.shape[1], 2500 + 1)))
 
-        #if weights are infs replace with 1s 
-        weight = where(isinf(weight), 1, weight)
         for xs in range(self._nxspec):
+            w = weight[xs]
             if get_jax_enabled():
-                xcl = xcl.at[self._xspec2xfreq[xs]].add(weight[xs] * cl[xs])
-                xw8 = xw8.at[self._xspec2xfreq[xs]].add(weight[xs])
-
+                finite = isfinite(w)
+                w_safe = where(finite, w, 0.0)        # 0 where inf/NaN
+                xcl = xcl.at[self._xspec2xfreq[xs]].add(w_safe * cl[xs])
+                xw8 = xw8.at[self._xspec2xfreq[xs]].add(w_safe)
             else:
-                xcl[self._xspec2xfreq[xs]] += weight[xs] * cl[xs]
-                xw8[self._xspec2xfreq[xs]] += weight[xs]
+                finite = np.isfinite(w)
+                w_safe = np.where(finite, w, 0.0)
+                xcl[self._xspec2xfreq[xs]] += w_safe * cl[xs]
+                xw8[self._xspec2xfreq[xs]] += w_safe
 
-        if get_jax_enabled():             
-            non_zero_weight_indices = xw8 != 0
-            safe_xw8 = where(non_zero_weight_indices, xw8, 1)  # Replace 0s with 1s for safety
-            inf_indices = xw8 == inf
-            safe_xw8 = where(inf_indices, 1, xw8)  # Replace infs with 1s for safety
-        else:
-            xw8[xw8 == 0] = inf
-        if normed:
-            if get_jax_enabled(): 
-                # normalized_xcl = where(non_zero_weight_indices, xcl / safe_xw8, 0)
-                normalized_xcl = xcl/safe_xw8 #zero weight points should alreadyb be zero 
-                return normalized_xcl
-            else:
-                return xcl / xw8
-        else:
+        if not normed:
             return xcl, xw8
+
+        if get_jax_enabled():
+            return where(xw8 > 0, xcl / xw8, 0.0)
+        else:
+            with np.errstate(invalid="ignore", divide="ignore"):
+                out = np.where(xw8 > 0, xcl / xw8, 0.0)
+            return out
+
+    # def _xspectra_to_xfreq(self, cl, weight, normed=True):
+    #     """
+    #     Average cross-spectra per cross-frequency
+    #     """
+    #     xcl = array(zeros((self._nxfreq, cl.shape[1], 2500 + 1)))
+    #     xw8 = array(zeros((self._nxfreq, cl.shape[1], 2500 + 1)))
+
+    #     #if weights are infs replace with 1s 
+    #     weight = where(isinf(weight), 1, weight)
+    #     for xs in range(self._nxspec):
+    #         if get_jax_enabled():
+    #             xcl = xcl.at[self._xspec2xfreq[xs]].add(weight[xs] * cl[xs])
+    #             xw8 = xw8.at[self._xspec2xfreq[xs]].add(weight[xs])
+
+    #         else:
+    #             xcl[self._xspec2xfreq[xs]] += weight[xs] * cl[xs]
+    #             xw8[self._xspec2xfreq[xs]] += weight[xs]
+
+    #     if get_jax_enabled():             
+    #         non_zero_weight_indices = xw8 != 0
+    #         safe_xw8 = where(non_zero_weight_indices, xw8, 1)  # Replace 0s with 1s for safety
+    #         inf_indices = xw8 == inf
+    #         safe_xw8 = where(inf_indices, 1, xw8)  # Replace infs with 1s for safety
+    #     else:
+    #         xw8[xw8 == 0] = inf
+    #     if normed:
+    #         if get_jax_enabled(): 
+    #             # normalized_xcl = where(non_zero_weight_indices, xcl / safe_xw8, 0)
+    #             normalized_xcl = xcl/safe_xw8 #zero weight points should alreadyb be zero 
+    #             return normalized_xcl
+    #         else:
+    #             return xcl / xw8
+    #     else:
+    #         return xcl, xw8
         
     
 
@@ -550,12 +584,21 @@ class HillipopPR4:
         # Data
         dldata = self._dldata[mode]
 
-        # Model
-        dlmodel = [dlth[mode]] * self._nxspec
+        # # Model
+        # dlmodel = [dlth[mode]] * self._nxspec
 
+        # for fg_ in self.fgs[mode]:
+        #     dlmodel_component = fg_.compute_dl(pars)
+        #     dlmodel = array(dlmodel) + array(dlmodel_component)
+        dlmodel = [dlth[mode]] * self._nxspec
         for fg_ in self.fgs[mode]:
             dlmodel_component = fg_.compute_dl(pars)
-            dlmodel = array(dlmodel) + array(dlmodel_component)
+            # # Convert to list for addition like official version
+            # if isinstance(dlmodel_component, array):
+            dlmodel_component = dlmodel_component.tolist()
+            dlmodel = [d1 + d2 for d1, d2 in zip(dlmodel, dlmodel_component)]
+        # Convert back to array at the end
+        dlmodel = array(dlmodel)
 
         Rspec = array(
             [
@@ -644,11 +687,54 @@ class HillipopPR4:
             # select multipole range
 
             #quickly make Rl and Wl "safe" for Jax 
-            Wl = where(Wl !=0, Wl, 1)
-            Wl = where(Wl != inf, Wl, 1)
+            # Wl = where(Wl !=0, Wl, 1)
+            # Wl = where(Wl != inf, Wl, 1)
+            Wl = where(Wl == 0, inf, Wl)
             Xl = hstack((Xl, self._select_spectra(Rl / Wl, "TE")))
 
-        self.delta_cl = asarray(Xl)
+        self.delta_cl = asarray(Xl).astype('float32')
+
+        # Add mode masking based on additional_args
+        if self.additional_args.get("tt_only"):
+            # Keep only TT part, zero out the rest
+            # Get TT size by computing TT residuals and selecting spectra
+            Rspec_tt = self._compute_residuals(params_dict, dlth, "TT")
+            Rl_tt = self._xspectra_to_xfreq(Rspec_tt, self._dlweight["TT"], normed=True)
+            tt_spectra = self._select_spectra(Rl_tt, "TT")
+            tt_size = array(tt_spectra).size  # Use .size to get total number of elements
+            # Zero out everything after TT part for all batches
+            self.delta_cl[:, tt_size:] = 0.0
+
+        elif self.additional_args.get("ee_only"):
+            # Keep only EE part, zero out the rest
+            # Get TT size
+            Rspec_tt = self._compute_residuals(params_dict, dlth, "TT")
+            Rl_tt = self._xspectra_to_xfreq(Rspec_tt, self._dlweight["TT"], normed=True)
+            tt_spectra = self._select_spectra(Rl_tt, "TT")
+            tt_size = array(tt_spectra).size
+            # Get EE size
+            Rspec_ee = self._compute_residuals(params_dict, dlth, "EE")
+            Rl_ee = self._xspectra_to_xfreq(Rspec_ee, self._dlweight["EE"], normed=True)
+            ee_spectra = self._select_spectra(Rl_ee, "EE")
+            ee_size = array(ee_spectra).size
+            # Zero out TT part and everything after EE part for all batches
+            self.delta_cl[:, :tt_size] = 0.0
+            self.delta_cl[:, tt_size+ee_size:] = 0.0
+
+        elif self.additional_args.get("te_only"):
+            # Keep only TE part, zero out the rest
+            # Get TT size
+            Rspec_tt = self._compute_residuals(params_dict, dlth, "TT")
+            Rl_tt = self._xspectra_to_xfreq(Rspec_tt, self._dlweight["TT"], normed=True)
+            tt_spectra = self._select_spectra(Rl_tt, "TT")
+            tt_size = array(tt_spectra).size
+            # Get EE size
+            Rspec_ee = self._compute_residuals(params_dict, dlth, "EE")
+            Rl_ee = self._xspectra_to_xfreq(Rspec_ee, self._dlweight["EE"], normed=True)
+            ee_spectra = self._select_spectra(Rl_ee, "EE")
+            ee_size = array(ee_spectra).size
+            # Zero out TT and EE parts for all batches
+            self.delta_cl[:, :tt_size+ee_size] = 0.0
 
         # Check for compression
         # If both binning_matrix and binned_invkll are provided, use pre-computed binned covariance
@@ -680,12 +766,14 @@ class HillipopPR4:
             return chi2
 
         def compute_chi2_jax(delta_cl, invkll):
-            # Matrix multiplication
-            intermediate = dot(invkll, delta_cl.T)
+            # # Matrix multiplication
+            # intermediate = dot(invkll, delta_cl.T)
 
-            # Computing the diagonal elements efficiently
-            # Calculate chi2 using einsum
-            chi2 = einsum("ij,ji->i", delta_cl, intermediate)
+            # # Computing the diagonal elements efficiently
+            # # Calculate chi2 using einsum
+            # chi2 = einsum("ij,ji->i", delta_cl, intermediate)
+
+            chi2 = einsum("bi,ij,bj->b", delta_cl, invkll, delta_cl)
 
             return chi2
 

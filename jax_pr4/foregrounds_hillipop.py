@@ -121,18 +121,22 @@ class fgmodel:
         return template[: self.lmax + 1]
 
     def _read_dl_template(self, filename, lsize=0, lnorm=3000):
-        """Read FG template (in Dl, muK^2)."""
-        # read dl template
-        ell, data = np.loadtxt(filename, unpack=True)
-        ell = array(ell, int)
+        """Read FG template (in Dl, muK^2), align to integer ell grid, normalize at l=3000."""
+        # Read two-column file
+        ell_vals, data_vals = np.loadtxt(filename, unpack=True)
+        ell_vals = array(ell_vals, dtype=int)
 
-        template = array(data)
+        # Align on integer ell grid, zero-padded up to max(self.lmax, max ell)
+        max_ell = int(max(self.lmax, int(ell_vals.max())))
+        tmpl_np = zeros(max_ell + 1)
+        tmpl_np[ell_vals] = data_vals
 
-        # normalize l=3000
+        # Normalize at l=3000
         if lnorm is not None:
-            template = template / template[lnorm]
+            tmpl_np = tmpl_np / tmpl_np[int(lnorm)]
 
-        return template[: 2500 + 1]
+        # Keep consistent 0..2500 support used elsewhere
+        return array(tmpl_np[: 2500 + 1])
 
     def compute_dl(self, pars):
         """Return spectra model for each cross-spectra."""
@@ -289,10 +293,13 @@ class dust_model(fgmodel):
         self.dlg = []
         hdr = ["ell", "100x100", "100x143", "100x217", "143x143", "143x217", "217x217"]
         data = np.loadtxt(f"{filename}_{mode}.txt").T
-        ell = array(data[0], int)
+        ell_np = array(data[0], dtype=int)
+        max_ell = int(ell_np.max())
         for f1, f2 in self._cross_frequencies:
-            tmpl = array(data[hdr.index(f"{f1}x{f2}")])
-            self.dlg.append(tmpl[: 2500 + 1])
+            # Align by ell index; zero where template has no value
+            tmpl_np = zeros(max_ell + 1)
+            tmpl_np[ell_np] = data[hdr.index(f"{f1}x{f2}")]
+            self.dlg.append(array(tmpl_np[: 2500 + 1]))
         self.dlg = array(self.dlg)
 
     def compute_dl(self, pars):
@@ -399,54 +406,32 @@ class cib_model(fgmodel):
             return 0.0
 
 
-# Thermal SZ model
+# tSZ (one spectrum for all freqs)
 class tsz_model(fgmodel):
-    """
-    Thermal-SZ power-spectrum foreground.
-
-    template = "planck"   → Planck EM12 shape, ν0 = 143 GHz
-    """
-    
-    def __init__(self, lmax, freqs,
-                 filename="",
-                 *, template="planck",
-                 data_folder=None, mode="TT", auto=False):
+    def __init__(self, lmax, freqs, filename="", mode="TT", auto=False):
         super().__init__(lmax, freqs, mode=mode, auto=auto)
+        # template: Dl=l(l+1)/2pi Cl, units uK at 143GHz
         self.name = "tSZ"
-        self.template = template.lower()
 
-        # Reference frequency ν0
-        self.nu0 = 143   # [GHz]
-
-        # Make sure effective ν are defined
+        # check effective freqs for SZ
         for f in freqs:
             if f not in self.fsz:
-                raise ValueError(f"Missing SZ effective frequency for {f} GHz")
-        
-        Dl_raw = self._read_dl_template(filename, lsize=10000)[:lmax+1]
+                raise ValueError(f"Missing SZ effective frequency for {f}")
 
-        # ℓ array & optional tilt
-        self.ells = arange(lmax + 1)
-        self.base_tsz = Dl_raw            # shape-only template
+        # read Dl template (normalized at l=3000)
+        sztmpl = self._read_dl_template(filename, lsize=10000)
 
-        # Pre-compute freq-scaled spectra
         self.dl_sz = []
         for f1, f2 in self._cross_frequencies:
             self.dl_sz.append(
-                self.base_tsz *
-                self._tszRatio(self.fsz[f1], self.nu0) *
-                self._tszRatio(self.fsz[f2], self.nu0)
+                sztmpl[: 2500 + 1]
+                * self._tszRatio(self.fsz[f1], self.f0)
+                * self._tszRatio(self.fsz[f2], self.f0)
             )
-        self.dl_sz = asarray(self.dl_sz)
+        self.dl_sz = array(self.dl_sz)
 
     def compute_dl(self, pars):
-        """
-        Atsz       – μK² at ℓ=3000 and ν0  (ν0=143 GHz for Planck)
-        """
-        Dl = asarray(pars["Atsz"])[None, :, None] * self.dl_sz[:, None, :]
-
-        return Dl
-
+        return array(pars["Atsz"])[newaxis, :, newaxis] * self.dl_sz[:, newaxis, :]
 
 # kSZ
 class ksz_model(fgmodel):

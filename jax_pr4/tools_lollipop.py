@@ -76,11 +76,9 @@ class Bins(object):
     def _bin_operators(self, lmins, lmaxs, Dl=False, cov=False):
         nbins = 29
         lmax = 30
-        if Dl:
-            ell2 = arange(lmax + 1)
-            ell2 = ell2 * (ell2 + 1) / (2 * pi)
-        else:
-            ell2 = ones(lmax + 1)
+        ell = arange(lmax + 1)
+        ell2 = ell * (ell + 1) / (2 * pi)
+        w_2l1 = 2 * ell + 1
 
         p = array(zeros((nbins, lmax + 1)))
         q = array(zeros((lmax + 1, nbins)))
@@ -88,33 +86,46 @@ class Bins(object):
         for b, (a, z) in enumerate(zip(lmins, lmaxs)):
             dl = z - a + 1
 
-            if get_jax_enabled():
-                p = p.at[b, a : z + 1].set(ell2[a : z + 1] / dl)
-                if cov:
-                    q = q.at[a : z + 1, b].set(1 / ell2[a : z + 1] / dl)
-                else:
-                    q = q.at[a : z + 1, b].set(1 / ell2[a : z + 1])
-
+            if Dl:
+                # Input is Dl, target Cb (Cl-binned): divide by ell2 and weight by (2l+1)
+                denom = sum(w_2l1[a : z + 1])
+                w_core = w_2l1[a : z + 1] / denom
+                w_p = w_core / ell2[a : z + 1]
+                w_q = w_core / ell2[a : z + 1]
+                w_q_cov = w_core / ell2[a : z + 1]
             else:
-                p[b, a : z + 1] = ell2[a : z + 1] / dl
+                # Input is Cl: use (2l+1)-weighted average in the bin
+                denom = sum(w_2l1[a : z + 1])
+                w_p = w_2l1[a : z + 1] / denom
+                w_q = w_2l1[a : z + 1] / denom
+                w_q_cov = w_2l1[a : z + 1] / denom
+
+            if get_jax_enabled():
+                p = p.at[b, a : z + 1].set(w_p)
                 if cov:
-                    q[a : z + 1, b] = 1 / ell2[a : z + 1] / dl
+                    q = q.at[a : z + 1, b].set(w_q_cov)
                 else:
-                    q[a : z + 1, b] = 1 / ell2[a : z + 1]
+                    q = q.at[a : z + 1, b].set(w_q)
+            else:
+                p[b, a : z + 1] = w_p
+                if cov:
+                    q[a : z + 1, b] = w_q_cov
+                else:
+                    q[a : z + 1, b] = w_q
 
         return p, q
 
-    def bin_spectra(self, spectra, lmins, lmaxs):
+    def bin_spectra(self, spectra, lmins, lmaxs, input_is_dl=False):
         """
-        Average spectra in bins specified by lmin, lmax and delta_ell,
-        weighted by `l(l+1)/2pi`.
-        Return Cb
+        Average spectra in bins specified by lmin, lmax and delta_ell.
+        If input_is_dl is True, convert from Dl to Cl through appropriate weighting.
+        Returns binned Cl with batching preserved.
         """
         spectra = asarray(spectra)
         # minlmax = module_min(array([spectra.shape[-1] - 1, self.lmax]))
         minlmax = 30
 
-        _p, _q = self._bin_operators(lmins, lmaxs)
+        _p, _q = self._bin_operators(lmins, lmaxs, Dl=input_is_dl)
         return dot(spectra[..., : minlmax + 1], _p.T[: minlmax + 1, ...])
 
     def bin_covariance(self, clcov, lmins, lmaxs):

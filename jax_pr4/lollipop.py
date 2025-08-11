@@ -71,12 +71,14 @@ class LollipopPR4:
         # Data (ell,ee,bb,eb)
         filepath = os.path.join(self.data_folder, self.cl_file)
         data = tools.read_dl(filepath)
+        # Files provide Cl for Lollipop; bin directly as Cl
         self.cldata = self.bins.bin_spectra(data, lmins, lmaxs)
 
         # Fiducial spectrum (ell,ee,bb,eb)
         print("Reading model")
         filepath = os.path.join(self.data_folder, self.fiducial_file)
         data = tools.read_dl(filepath)
+        # Fiducial file provides Cl; bin directly as Cl
         self.clfid = self.bins.bin_spectra(data, lmins, lmaxs)
 
         # covmat (ee,bb,eb)
@@ -129,13 +131,12 @@ class LollipopPR4:
         Input: Cl in muK^2
         """
         # get model in Cl, muK^2
-        clth = array(
-            [
-                self.bins.bin_spectra(cl[mode], self.lmins, self.lmaxs)
-                for mode in ["ee", "bb", "eb"]
-                if mode in cl
-            ]
-        )
+        # Bin input Cl spectra (batched: [batch, ell]) into [batch, nbins] per mode
+        clth_stacked = []
+        for mode in ["ee", "bb", "eb"]:
+            if mode in cl:
+                clth_stacked.append(self.bins.bin_spectra(cl[mode], self.lmins, self.lmaxs, input_is_dl=False))
+        clth = array(clth_stacked)  # shape [nmode=3, batch, nbins]
 
         #if A_act is in params_dict, use it, otherwise use A_planck
         if "A_act" in params_dict:
@@ -143,33 +144,43 @@ class LollipopPR4:
         else:
             cal = array(params_dict["A_planck"]) ** 2
 
-        nell = self.cldata.shape[1]
-        x = array(zeros(self.cldata.shape))
-        for ell in range(nell):
-            Oo = tools.vec2mat(self.cloff[:, ell])
-            D = tools.vec2mat(self.cldata[:, ell] * cal) + Oo
-            M = tools.vec2mat(clth[:, ell]) + Oo
-            F = tools.vec2mat(self.clfid[:, ell]) + Oo
+        # Prepare batched per-ell transformations
+        nbins = self.cldata.shape[1]
+        batch = cal.shape[0]
+        x = array(zeros((batch, 3, nbins)))
+        for ell in range(nbins):
+            # Offsets are non-batched, shape (3,)
+            Oo = tools.vec2mat(self.cloff[:, ell])  # 2x2
+
+            # Data vector per batch
+            d_vect = self.cldata[:, ell][newaxis, :] * cal[:, newaxis]  # [batch, 3]
+            D = vmap(tools.vec2mat)(d_vect) + Oo  # [batch, 2, 2]
+
+            m_vect = clth[:, :, ell].transpose(1, 0)  # [batch, 3]
+            M = vmap(tools.vec2mat)(m_vect) + Oo  # [batch, 2, 2]
+
+            f_vect = self.clfid[:, ell][newaxis, :].repeat(batch, axis=0)  # [batch, 3]
+            F = vmap(tools.vec2mat)(f_vect) + Oo  # [batch, 2, 2]
 
             # compute P = C_model^{-1/2}.C_data.C_model^{-1/2}
             w, V = linalg.eigh(M)
             #            if prod( sign(w)) <= 0:
             #                print( "WARNING: negative eigenvalue for l=%d" %l)
-            L = V @ diag(1.0 / sqrt(w)) @ V.transpose()
-            P = L.transpose() @ D @ L
+            L = V @ diag(1.0 / sqrt(w)) @ transpose(V, (0, 2, 1))
+            P = transpose(L, (0, 2, 1)) @ D @ L
 
             # apply HL transformation
             w, V = linalg.eigh(P)
             g = sign(w) * tools.ghl(abs(w))
-            G = V @ diag(g) @ V.transpose()
+            G = V @ diag(g) @ transpose(V, (0, 2, 1))
 
             # cholesky fiducial
             w, V = linalg.eigh(F)
-            L = V @ diag(sqrt(w)) @ V.transpose()
+            L = V @ diag(sqrt(w)) @ transpose(V, (0, 2, 1))
 
             # compute C_fid^1/2 * G * C_fid^1/2
-            X = L.transpose() @ G @ L
-            x[:, ell] = tools.mat2vec(X)
+            X = transpose(L, (0, 2, 1)) @ G @ L
+            x[:, :, ell] = vmap(tools.mat2vec)(X)
 
         # compute chi2
         # x = x.flatten()
@@ -180,12 +191,13 @@ class LollipopPR4:
 
         # update for 2d x inputs
 
+        # Flatten per batch and compute quadratic form diag(X @ inv @ X^T)
+        Xflat = x.reshape((batch, -1))
         if self.marginalised_over_covariance:
-            chi2 = self.Nsim * log(
-                1 + sum(x @ self.invclcov * x, axis=1) / (self.Nsim - 1)
-            )
+            quad = einsum("bi,ij,bj->b", Xflat, self.invclcov, Xflat)
+            chi2 = self.Nsim * log(1 + quad / (self.Nsim - 1))
         else:
-            chi2 = sum(x @ self.invclcov * x, axis=1)
+            chi2 = einsum("bi,ij,bj->b", Xflat, self.invclcov, Xflat)
 
         print(f"chi2/ndof = {chi2[0]}/{X.shape[1]}")
 
