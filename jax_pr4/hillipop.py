@@ -593,9 +593,7 @@ class HillipopPR4:
         dlmodel = [dlth[mode]] * self._nxspec
         for fg_ in self.fgs[mode]:
             dlmodel_component = fg_.compute_dl(pars)
-            # # Convert to list for addition like official version
-            # if isinstance(dlmodel_component, array):
-            dlmodel_component = dlmodel_component.tolist()
+            # Use JAX-compatible array operations instead of .tolist()
             dlmodel = [d1 + d2 for d1, d2 in zip(dlmodel, dlmodel_component)]
         # Convert back to array at the end
         dlmodel = array(dlmodel)

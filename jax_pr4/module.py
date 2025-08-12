@@ -26,7 +26,7 @@ if is_jax:
         moveaxis, rollaxis, logical_or, tanh, column_stack, power, asarray, 
         sign, matmul, logical_and, stack, all, ndim, ceil, argwhere, cov, 
         nansum, nanmax, identity, triu_indices, repeat, bincount, s_, nan_to_num, 
-        copy, take_along_axis, atleast_1d, clip, mod, zeros, array, inf, nan, arange, where, hstack, mean, isnan, isinf
+        copy, take_along_axis, atleast_1d, clip, mod, zeros, array, inf, nan, arange, where, hstack, mean, isnan, isinf, isfinite
     )
     from jax import vmap 
     from jax.numpy import max as module_max
@@ -48,7 +48,7 @@ else:
         loadtxt, sign, matmul, logical_and, stack, all, ndim, ceil, 
         argwhere, cov, nansum, nanmax, fill_diagonal, identity, triu_indices, 
         repeat, bincount, s_, nan_to_num, copy, take_along_axis, atleast_1d, 
-        clip, mod, zeros, array, inf, nan, arange, where, hstack, mean, isnan, isinf
+        clip, mod, zeros, array, inf, nan, arange, where, hstack, mean, isnan, isinf, isfinite
     )
     from numpy import max as module_max
     from numpy import min as module_min
