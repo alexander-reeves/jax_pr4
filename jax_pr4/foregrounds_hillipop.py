@@ -129,7 +129,10 @@ class fgmodel:
         # Align on integer ell grid, zero-padded up to max(self.lmax, max ell)
         max_ell = int(max(self.lmax, int(ell_vals.max())))
         tmpl_np = zeros(max_ell + 1)
-        tmpl_np[ell_vals] = data_vals
+        if is_jax:
+            tmpl_np = tmpl_np.at[ell_vals].set(data_vals)
+        else:
+            tmpl_np[ell_vals] = data_vals
 
         # Normalize at l=3000
         if lnorm is not None:
@@ -298,7 +301,10 @@ class dust_model(fgmodel):
         for f1, f2 in self._cross_frequencies:
             # Align by ell index; zero where template has no value
             tmpl_np = zeros(max_ell + 1)
-            tmpl_np[ell_np] = data[hdr.index(f"{f1}x{f2}")]
+            if is_jax:
+                tmpl_np = tmpl_np.at[ell_np].set(data[hdr.index(f"{f1}x{f2}")])
+            else:
+                tmpl_np[ell_np] = data[hdr.index(f"{f1}x{f2}")]
             self.dlg.append(array(tmpl_np[: 2500 + 1]))
         self.dlg = array(self.dlg)
 
